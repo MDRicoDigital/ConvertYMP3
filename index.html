@@ -137,9 +137,9 @@
     }
   </style>
 
-  <!-- Carrega as bibliotecas do FFmpeg WebAssembly via CDN -->
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/util.js"></script>
+  <!-- CDNs via jsDelivr para evitar erro de tipo MIME -->
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/util.js"></script>
 </head>
 <body>
 
@@ -165,9 +165,6 @@
   </div>
 
   <script>
-    const { FFmpeg } = FFmpegWASM;
-    const { fetchFile, toBlobURL } = FFmpegUtil;
-
     let ffmpeg = null;
 
     const urlInput = document.getElementById('yt-url');
@@ -188,16 +185,18 @@
       if (ffmpeg) return;
 
       updateStatus('Carregando FFmpeg no navegador...', 10);
+      
+      const { FFmpeg } = window.FFmpegWASM;
+      const { toBlobURL } = window.FFmpegUtil;
+
       ffmpeg = new FFmpeg();
 
-      // Monitor de progresso do FFmpeg
       ffmpeg.on('progress', ({ progress }) => {
         const percent = Math.round(progress * 100);
         updateStatus(`Convertendo para MP3 (${percent}%)...`, 50 + (percent * 0.5));
       });
 
-      // Carrega scripts base do FFmpeg WASM
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
       await ffmpeg.load({
         coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
         wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
@@ -215,10 +214,8 @@
       downloadContainer.style.display = 'none';
 
       try {
-        // 1. Instanciar/Carregar motor FFmpeg WASM
         await loadFFmpeg();
 
-        // 2. Chamar a Cobalt API para extrair a URL de áudio bruto
         updateStatus('Obtendo link de áudio via Cobalt API...', 25);
         
         const response = await fetch('https://api.cobalt.tools/api/json', {
@@ -238,26 +235,23 @@
         const data = await response.json();
 
         if (!data || data.status === 'error' || !data.url) {
-          throw new Error(data.text || 'Falha ao extrair áudio com a Cobalt API.');
+          throw new Error((data && data.text) ? data.text : 'Falha ao extrair áudio com a Cobalt API.');
         }
 
         const rawAudioUrl = data.url;
 
-        // 3. Baixar os bytes do áudio original no navegador
         updateStatus('Baixando áudio original na memória...', 40);
+        const { fetchFile } = window.FFmpegUtil;
         const inputData = await fetchFile(rawAudioUrl);
         await ffmpeg.writeFile('input_audio', inputData);
 
-        // 4. Executar comando do FFmpeg para converter para MP3 (192k)
         updateStatus('Iniciando conversão FFmpeg.wasm...', 50);
         await ffmpeg.exec(['-i', 'input_audio', '-vn', '-b:a', '192k', 'output.mp3']);
 
-        // 5. Ler o arquivo MP3 gerado na memória do navegador
         const mp3Data = await ffmpeg.readFile('output.mp3');
         const mp3Blob = new Blob([mp3Data.buffer], { type: 'audio/mp3' });
         const mp3BlobUrl = URL.createObjectURL(mp3Blob);
 
-        // 6. Configurar botão de download
         downloadLink.href = mp3BlobUrl;
         downloadLink.download = `audio_${Date.now()}.mp3`;
         downloadContainer.style.display = 'block';
