@@ -137,9 +137,8 @@
     }
   </style>
 
-  <!-- CDNs via jsDelivr para evitar erro de tipo MIME -->
+  <!-- Apenas o FFmpeg principal (sem utilitários externos) -->
   <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/util.js"></script>
 </head>
 <body>
 
@@ -181,14 +180,19 @@
       progressFill.style.width = `${progressPercent}%`;
     }
 
+    // Função auxiliar nativa para carregar URLs como Blobs sem depender da lib @ffmpeg/util
+    async function urlToBlobURL(url, mimeType) {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      return URL.createObjectURL(new Blob([blob], { type: mimeType }));
+    }
+
     async function loadFFmpeg() {
       if (ffmpeg) return;
 
       updateStatus('Carregando FFmpeg no navegador...', 10);
       
       const { FFmpeg } = window.FFmpegWASM;
-      const { toBlobURL } = window.FFmpegUtil;
-
       ffmpeg = new FFmpeg();
 
       ffmpeg.on('progress', ({ progress }) => {
@@ -197,10 +201,11 @@
       });
 
       const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-      });
+      
+      const coreURL = await urlToBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+      const wasmURL = await urlToBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+
+      await ffmpeg.load({ coreURL, wasmURL });
     }
 
     async function startConversion() {
@@ -214,8 +219,10 @@
       downloadContainer.style.display = 'none';
 
       try {
+        // 1. Carrega o engine do FFmpeg
         await loadFFmpeg();
 
+        // 2. Extrai a URL bruta do áudio usando a API Cobalt
         updateStatus('Obtendo link de áudio via Cobalt API...', 25);
         
         const response = await fetch('https://api.cobalt.tools/api/json', {
@@ -240,14 +247,18 @@
 
         const rawAudioUrl = data.url;
 
+        // 3. Baixa os bytes do áudio direto na memória via fetch nativo
         updateStatus('Baixando áudio original na memória...', 40);
-        const { fetchFile } = window.FFmpegUtil;
-        const inputData = await fetchFile(rawAudioUrl);
-        await ffmpeg.writeFile('input_audio', inputData);
+        const audioRes = await fetch(rawAudioUrl);
+        const audioBuffer = await audioRes.arrayBuffer();
+        
+        await ffmpeg.writeFile('input_audio', new Uint8Array(audioBuffer));
 
+        // 4. Converte para MP3
         updateStatus('Iniciando conversão FFmpeg.wasm...', 50);
         await ffmpeg.exec(['-i', 'input_audio', '-vn', '-b:a', '192k', 'output.mp3']);
 
+        // 5. Gera o arquivo de saída
         const mp3Data = await ffmpeg.readFile('output.mp3');
         const mp3Blob = new Blob([mp3Data.buffer], { type: 'audio/mp3' });
         const mp3BlobUrl = URL.createObjectURL(mp3Blob);
