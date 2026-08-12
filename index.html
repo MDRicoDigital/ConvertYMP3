@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube to MP3 - Client-Side Converter</title>
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #22c55e;
+      --border: #334155;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+    }
+
+    .container {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      width: 100%;
+      max-width: 500px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      margin-top: 0;
+      margin-bottom: 1.5rem;
+      text-align: center;
+      color: #fff;
+    }
+
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    label {
+      font-size: 0.875rem;
+      color: #94a3b8;
+    }
+
+    input[type="text"] {
+      padding: 0.75rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background-color: #0f172a;
+      color: #fff;
+      font-size: 1rem;
+      outline: none;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--primary);
+    }
+
+    button {
+      background-color: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 0.75rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    button:hover:not(:disabled) {
+      background-color: var(--primary-hover);
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .status-box {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      border-radius: 6px;
+      background-color: #0f172a;
+      border: 1px solid var(--border);
+      font-size: 0.875rem;
+    }
+
+    .status-text {
+      margin-bottom: 0.5rem;
+      word-break: break-all;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 8px;
+      background-color: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background-color: var(--primary);
+      transition: width 0.2s;
+    }
+
+    .download-area {
+      margin-top: 1.5rem;
+      text-align: center;
+    }
+
+    .download-btn {
+      display: inline-block;
+      background-color: var(--success);
+      color: white;
+      text-decoration: none;
+      padding: 0.75rem 1.5rem;
+      border-radius: 6px;
+      font-weight: 600;
+    }
+  </style>
+
+  <!-- Carrega as bibliotecas do FFmpeg WebAssembly via CDN -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/util.js"></script>
+</head>
+<body>
+
+  <div class="container">
+    <h1>Converter YouTube em MP3</h1>
+
+    <div class="input-group">
+      <label for="yt-url">Cole o Link do Vídeo:</label>
+      <input type="text" id="yt-url" placeholder="https://www.youtube.com/watch?v=..." />
+      <button id="start-btn">Converter para MP3</button>
+    </div>
+
+    <div id="status-container" class="status-box" style="display: none;">
+      <div id="status-text" class="status-text">Aguardando início...</div>
+      <div class="progress-bar-bg">
+        <div id="progress-fill" class="progress-bar-fill"></div>
+      </div>
+    </div>
+
+    <div id="download-container" class="download-area" style="display: none;">
+      <a id="download-link" class="download-btn" download="audio.mp3">Baixar Arquivo MP3</a>
+    </div>
+  </div>
+
+  <script>
+    const { FFmpeg } = FFmpegWASM;
+    const { fetchFile, toBlobURL } = FFmpegUtil;
+
+    let ffmpeg = null;
+
+    const urlInput = document.getElementById('yt-url');
+    const startBtn = document.getElementById('start-btn');
+    const statusContainer = document.getElementById('status-container');
+    const statusText = document.getElementById('status-text');
+    const progressFill = document.getElementById('progress-fill');
+    const downloadContainer = document.getElementById('download-container');
+    const downloadLink = document.getElementById('download-link');
+
+    function updateStatus(msg, progressPercent = 0) {
+      statusContainer.style.display = 'block';
+      statusText.innerText = msg;
+      progressFill.style.width = `${progressPercent}%`;
+    }
+
+    async function loadFFmpeg() {
+      if (ffmpeg) return;
+
+      updateStatus('Carregando FFmpeg no navegador...', 10);
+      ffmpeg = new FFmpeg();
+
+      // Monitor de progresso do FFmpeg
+      ffmpeg.on('progress', ({ progress }) => {
+        const percent = Math.round(progress * 100);
+        updateStatus(`Convertendo para MP3 (${percent}%)...`, 50 + (percent * 0.5));
+      });
+
+      // Carrega scripts base do FFmpeg WASM
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+    }
+
+    async function startConversion() {
+      const url = urlInput.value.trim();
+      if (!url) {
+        alert('Por favor, cole um link do YouTube válido.');
+        return;
+      }
+
+      startBtn.disabled = true;
+      downloadContainer.style.display = 'none';
+
+      try {
+        // 1. Instanciar/Carregar motor FFmpeg WASM
+        await loadFFmpeg();
+
+        // 2. Chamar a Cobalt API para extrair a URL de áudio bruto
+        updateStatus('Obtendo link de áudio via Cobalt API...', 25);
+        
+        const response = await fetch('https://api.cobalt.tools/api/json', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            url: url,
+            downloadMode: 'audio',
+            audioFormat: 'best',
+            isAudioOnly: true
+          })
+        });
+
+        const data = await response.json();
+
+        if (!data || data.status === 'error' || !data.url) {
+          throw new Error(data.text || 'Falha ao extrair áudio com a Cobalt API.');
+        }
+
+        const rawAudioUrl = data.url;
+
+        // 3. Baixar os bytes do áudio original no navegador
+        updateStatus('Baixando áudio original na memória...', 40);
+        const inputData = await fetchFile(rawAudioUrl);
+        await ffmpeg.writeFile('input_audio', inputData);
+
+        // 4. Executar comando do FFmpeg para converter para MP3 (192k)
+        updateStatus('Iniciando conversão FFmpeg.wasm...', 50);
+        await ffmpeg.exec(['-i', 'input_audio', '-vn', '-b:a', '192k', 'output.mp3']);
+
+        // 5. Ler o arquivo MP3 gerado na memória do navegador
+        const mp3Data = await ffmpeg.readFile('output.mp3');
+        const mp3Blob = new Blob([mp3Data.buffer], { type: 'audio/mp3' });
+        const mp3BlobUrl = URL.createObjectURL(mp3Blob);
+
+        // 6. Configurar botão de download
+        downloadLink.href = mp3BlobUrl;
+        downloadLink.download = `audio_${Date.now()}.mp3`;
+        downloadContainer.style.display = 'block';
+
+        updateStatus('Conversão concluída com sucesso!', 100);
+
+      } catch (err) {
+        console.error(err);
+        updateStatus(`Erro: ${err.message}`, 0);
+      } finally {
+        startBtn.disabled = false;
+      }
+    }
+
+    startBtn.addEventListener('click', startConversion);
+  </script>
+</body>
+</html>
